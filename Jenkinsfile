@@ -26,8 +26,14 @@ pipeline {
                 script {
                     echo "Building Docker image: ${env.DOCKERHUB_REPOSITORY}:${env.DOCKER_TAG}"
                     
-                    // Build the Docker image
-                    sh "docker build -t ${env.DOCKERHUB_REPOSITORY}:${env.DOCKER_TAG} -f docker/Dockerfile ."
+                    // Build multi-platform Docker image
+                    sh """
+                        docker buildx create --use --name multiarch-builder || true
+                        docker buildx build --platform linux/amd64,linux/arm64 \
+                        -t ${env.DOCKERHUB_REPOSITORY}:${env.DOCKER_TAG} \
+                        -f docker/Dockerfile \
+                        --push .
+                    """
                     
                     echo 'Docker image built successfully'
                 }
