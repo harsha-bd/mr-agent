@@ -3,9 +3,9 @@ pipeline {
     
     environment {
         // Define your Docker Hub repository and credentials
-        DOCKERHUB_REPOSITORY = "harsham1/test-jen-dock"  // Change 'your-app-name' to your actual app name
+        DOCKERHUB_REPOSITORY = "harsham1/test-jen-dock"
         DOCKER_TAG = "latest"
-        DOCKERHUB_CREDENTIALS = 'docker-hub-credentials'  // Your Jenkins credential ID
+        DOCKERHUB_CREDENTIALS = 'docker-hub-credentials'
     }
     
     triggers {
@@ -28,9 +28,6 @@ pipeline {
                     
                     // Build the Docker image
                     sh "docker build -t ${env.DOCKERHUB_REPOSITORY}:${env.DOCKER_TAG} -f docker/Dockerfile ."
-                    
-                    // Also tag with build number
-                    sh "docker tag ${env.DOCKERHUB_REPOSITORY}:${env.DOCKER_TAG} ${env.DOCKERHUB_REPOSITORY}:build-${env.BUILD_NUMBER}"
                     
                     echo 'Docker image built successfully'
                 }
@@ -73,14 +70,11 @@ pipeline {
                 script {
                     echo 'Pushing Docker image to Docker Hub...'
                     
-                    // Push both latest and build-specific tags
+                    // Push only the latest tag
                     sh "docker push ${env.DOCKERHUB_REPOSITORY}:${env.DOCKER_TAG}"
-                    sh "docker push ${env.DOCKERHUB_REPOSITORY}:build-${env.BUILD_NUMBER}"
                     
                     echo "✅ Docker image pushed successfully!"
-                    echo "🐳 Images available at:"
-                    echo "   - ${env.DOCKERHUB_REPOSITORY}:${env.DOCKER_TAG}"
-                    echo "   - ${env.DOCKERHUB_REPOSITORY}:build-${env.BUILD_NUMBER}"
+                    echo "🐳 Image available at: ${env.DOCKERHUB_REPOSITORY}:${env.DOCKER_TAG}"
                 }
             }
         }
@@ -93,7 +87,6 @@ pipeline {
                     // Remove local images to save disk space
                     sh """
                         docker rmi ${env.DOCKERHUB_REPOSITORY}:${env.DOCKER_TAG} || true
-                        docker rmi ${env.DOCKERHUB_REPOSITORY}:build-${env.BUILD_NUMBER} || true
                         docker system prune -f || true
                     """
                     
