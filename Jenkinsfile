@@ -26,13 +26,22 @@ pipeline {
                 script {
                     echo "Building Docker image: ${env.DOCKERHUB_REPOSITORY}:${env.DOCKER_TAG}"
                     
-                    // Build multi-platform Docker image
+                    // Build Docker image (fallback to single platform if buildx fails)
                     sh """
-                        docker buildx create --use --name multiarch-builder || true
-                        docker buildx build --platform linux/amd64,linux/arm64 \
-                        -t ${env.DOCKERHUB_REPOSITORY}:${env.DOCKER_TAG} \
-                        -f docker/Dockerfile \
-                        --push .
+                        # Try multi-platform first
+                        if docker buildx create --use --name multiarch-builder 2>/dev/null; then
+                            echo "Using buildx for multi-platform build"
+                            docker buildx build --platform linux/amd64,linux/arm64 \
+                            -t ${env.DOCKERHUB_REPOSITORY}:${env.DOCKER_TAG} \
+                            -f docker/Dockerfile \
+                            --push . || {
+                                echo "Buildx failed, falling back to standard docker build"
+                                docker build -t ${env.DOCKERHUB_REPOSITORY}:${env.DOCKER_TAG} -f docker/Dockerfile .
+                            }
+                        else
+                            echo "Buildx not available, using standard docker build"
+                            docker build -t ${env.DOCKERHUB_REPOSITORY}:${env.DOCKER_TAG} -f docker/Dockerfile .
+                        fi
                     """
                     
                     echo 'Docker image built successfully'
