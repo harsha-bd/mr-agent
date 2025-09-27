@@ -26,7 +26,7 @@ pipeline {
                 script {
                     echo "Building Docker image: ${env.DOCKERHUB_REPOSITORY}:${env.DOCKER_TAG}"
                     
-                    # Build Docker image with platform support
+                    // Build Docker image with platform support
                     sh """
                         # First try to setup buildx
                         if docker buildx create --use --name multiarch-builder --driver docker-container 2>/dev/null || docker buildx use multiarch-builder 2>/dev/null; then
