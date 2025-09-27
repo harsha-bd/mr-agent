@@ -28,6 +28,8 @@ from pr_agent.git_providers.git_provider import get_main_pr_language, GitProvide
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.pr_description import insert_br_after_x_chars
+from pr_agent.custom_handlers.Jira_zypher_handler import JiraTestCaseHandler
+from pr_agent.custom_handlers.coding_standards_handler import Coding_standards_Handler
 
 
 class PRCodeSuggestions:
@@ -72,7 +74,11 @@ class PRCodeSuggestions:
             "focus_only_on_problems": get_settings().get("pr_code_suggestions.focus_only_on_problems", False),
             "date": datetime.now().strftime('%Y-%m-%d'),
             'duplicate_prompt_examples': get_settings().config.get('duplicate_prompt_examples', False),
+            "coding_standards": {"title": "", "body_value": "", "status": ""}, # Will be populated later if available        
         }
+
+        if "jira_test_cases" not in self.vars:
+            self.vars["jira_test_cases"] = []
 
         if get_settings().pr_code_suggestions.get("decouple_hunks", True):
             self.pr_code_suggestions_prompt_system = get_settings().pr_code_suggestions_prompt.system
@@ -95,6 +101,25 @@ class PRCodeSuggestions:
             if not self.git_provider.get_files():
                 get_logger().info(f"PR has no files: {self.pr_url}, skipping code suggestions")
                 return None
+            # --- Add JIRA block here ---
+            try:
+                jira_handler = JiraTestCaseHandler(self.git_provider.get_pr_url())
+                jira_cases = await jira_handler.handle()
+                self.vars["jira_test_cases"] = jira_cases
+                get_logger().info(f"JIRA test cases for PR: {self.vars['jira_test_cases']}")
+            except Exception as e:
+                get_logger().error(f"Failed to fetch JIRA test cases for code suggestions: {e}")
+                self.vars["jira_test_cases"] = []
+            # --- End of block ---
+            # Coding standards handling
+            try:
+                coding_standards_handler = Coding_standards_Handler(self.git_provider.get_pr_url())
+                coding_standards = await coding_standards_handler.fetch_configured_content()
+                # Add to self.vars so it can be used in the prompt
+                self.vars["coding_standards"] = coding_standards
+            except Exception as e:
+                get_logger().error(f"Failed to fetch coding standards for prompt: {e}")
+                self.vars["coding_standards"] = {"title": "No coding standards found", "body_value": "", "status": "error"}
 
             get_logger().info('Generating code suggestions for PR...')
             relevant_configs = {'pr_code_suggestions': dict(get_settings().pr_code_suggestions),

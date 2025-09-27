@@ -71,6 +71,21 @@ Extra user-provided instructions (should be addressed with high priority):
 ======
 {%- endif %}
 
+{%- if jira_test_cases %}
+
+JIRA/Zephyr Test Cases Section:
+=====
+You will be provided with a list of JIRA and Zephyr test cases referenced in this PR. For each test case, consider its objective, source (Jira or Zephyr), labels, and steps (if present). When generating code suggestions, prioritize suggestions that help the PR code fully address these test cases and their objectives. Focus on ensuring the code changes align with the test case requirements and expected outcomes.
+=====
+{% endif %}
+
+{%- if coding_standards and coding_standards.body_value %}
+
+Coding Standards Section:
+=====
+You will be provided with coding standards documentation that should be used to evaluate this PR. Use these standards as guidelines when generating code suggestions, and ensure your suggestions help the code align with these standards. Focus particularly on the standards most relevant to the PR's changes.
+=====
+{% endif %}
 
 The output must be a YAML object equivalent to type $PRCodeSuggestions, according to the following Pydantic definitions:
 =====
@@ -128,6 +143,16 @@ The PR Diff:
 ======
 {{ diff_no_line_numbers|trim }}
 ======
+
+Test Cases referenced in this PR:
+=====
+{{ jira_test_cases }}
+=====
+
+Coding Standards to Follow:
+=====
+{{coding_standards }}
+=====
 
 {%- if duplicate_prompt_examples %}
 

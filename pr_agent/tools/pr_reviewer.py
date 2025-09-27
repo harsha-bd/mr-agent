@@ -25,7 +25,9 @@ from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.ticket_pr_compliance_check import (
     extract_and_cache_pr_tickets, extract_tickets)
-
+from pr_agent.custom_handlers.Jira_zypher_handler import JiraTestCaseHandler
+from pr_agent.custom_handlers.coding_standards_handler import Coding_standards_Handler
+from pr_agent.custom_handlers.confluence_mr_handler import ConfluenceMRHandler
 
 class PRReviewer:
     """
@@ -99,8 +101,11 @@ class PRReviewer:
             "related_tickets": get_settings().get('related_tickets', []),
             'duplicate_prompt_examples': get_settings().config.get('duplicate_prompt_examples', False),
             "date": datetime.datetime.now().strftime('%Y-%m-%d'),
+            "coding_standards": {"title": "", "body_value": "", "status": ""}, # Will be populated later if available
+            "confluence_content": {"title": "", "body_value": "", "status": ""}, # Will be populated if ID found in MR
         }
-
+        if "jira_test_cases" not in self.vars:
+            self.vars["jira_test_cases"] = []
         self.token_handler = TokenHandler(
             self.git_provider.pr,
             self.vars,
@@ -151,6 +156,40 @@ class PRReviewer:
 
             if get_settings().config.publish_output and not get_settings().config.get('is_auto_command', False):
                 self.git_provider.publish_comment("Preparing review...", is_temporary=True)
+            # JIRA test cases handling
+            # ...inside async def run(self):, before await retry_with_fallback_models(...)
+            try:
+                jira_handler = JiraTestCaseHandler(self.git_provider.get_pr_url())
+                jira_cases = await jira_handler.handle()
+                # Add to self.vars so it can be used in the prompt
+                self.vars["jira_test_cases"] = jira_cases
+            except Exception as e:
+                get_logger().error(f"Failed to fetch JIRA test cases for prompt: {e}")
+             # JIRA test cases handling
+
+            # Always ensure it's present, even if not fetched above
+            if "jira_test_cases" not in self.vars:
+                self.vars["jira_test_cases"] = []
+
+            # Coding standards handling
+            try:
+                coding_standards_handler = Coding_standards_Handler(self.git_provider.get_pr_url())
+                coding_standards = await coding_standards_handler.fetch_configured_content()
+                # Add to self.vars so it can be used in the prompt
+                self.vars["coding_standards"] = coding_standards
+            except Exception as e:
+                get_logger().error(f"Failed to fetch coding standards for prompt: {e}")
+                self.vars["coding_standards"] = {"title": "No coding standards found", "body_value": "", "status": "error"}
+
+            # Confluence content handling
+            try:
+                confluence_handler = ConfluenceMRHandler(merge_request_url=self.pr_url)
+                confluence_content = await confluence_handler.get_confluence_content_async()
+                # Add to self.vars as a separate field
+                self.vars["confluence_content"] = confluence_content
+            except Exception as e:
+                get_logger().error(f"Failed to fetch Confluence content for prompt: {e}")
+                self.vars["confluence_content"] = {"title": "No Confluence content found", "body_value": "", "status": "error"}
 
             await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.REGULAR)
             if not self.prediction:
@@ -248,6 +287,43 @@ class PRReviewer:
             key_issues_to_review = data['review'].pop('key_issues_to_review')
             data['review']['key_issues_to_review'] = key_issues_to_review
 
+        # --- JIRA test cases prettification ---
+        if 'jira_test_cases' in data['review'] and isinstance(data['review']['jira_test_cases'], list):
+            jira_cases = data['review']['jira_test_cases']
+            if jira_cases:
+                # Build a structured format instead of a table for better readability
+                jira_md = "\n**JIRA/Zephyr Test Cases:**\n\n"
+                
+                for i, case in enumerate(jira_cases, 1):
+                    key = case.get('key', '')
+                    name = case.get('name', '')
+                    source = case.get('source', '')
+                    labels = case.get('labels', [])
+                    objective = case.get('objective', '')
+                    review = case.get('review', '')
+                    
+                    # Format labels
+                    labels_str = ', '.join(labels) if isinstance(labels, list) and labels else 'None'
+                    
+                    # Clean up text formatting
+                    objective = objective.replace('\n', ' ').strip() if objective else 'No objective provided'
+                    review = review.replace('\n', ' ').strip() if review else 'No review provided'
+                    name = name.strip() if name else 'No name provided'
+                    
+                    # Limit objective length for readability
+                    if len(objective) > 150:
+                        objective = objective[:150] + "..."
+                    
+                    # Create structured format
+                    jira_md += f"### {i}. {key}: {name}\n"
+                    jira_md += f"- **Source:** {source}\n"
+                    jira_md += f"- **Labels:** {labels_str}\n"
+                    jira_md += f"- **Objective:** {objective}\n"
+                    jira_md += f"- **Review:** {review}\n\n"
+                
+                # Insert the formatted content into the markdown output
+                data['review']['jira_test_cases'] = jira_md
+        # --- end JIRA prettification ---
         incremental_review_markdown_text = None
         # Add incremental review section
         if self.incremental.is_incremental:

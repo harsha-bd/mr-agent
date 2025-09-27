@@ -56,6 +56,29 @@ Extra instructions from the user:
 ======
 {% endif %}
 
+{%- if jira_test_cases %}
+
+JIRA/Zephyr Test Cases Section:
+=====
+You will be provided with a list of JIRA and Zephyr test cases referenced in this PR. For each test case, compare the PR code changes to the test case's objective and steps (if present). In your review, highlight if the code addresses, partially addresses, or does not address each test case and its steps. If possible, mention which files or code sections relate to each test case.
+=====
+{% endif %}
+
+{%- if coding_standards and coding_standards.body_value %}
+
+Coding Standards Section:
+=====
+You will be provided with coding standards documentation that should be used to evaluate this PR. Use these standards as guidelines when reviewing the code, and point out any violations in your review. Focus particularly on the standards most relevant to the PR's changes.
+=====
+{% endif %}
+
+{%- if confluence_content and confluence_content.body_value %}
+
+MR Review Guidelines Section:
+=====
+You will be provided with specific MR review guidelines from a Confluence page. These guidelines contain important instructions on how to review this MR effectively. Please carefully follow these guidelines during your review process, and ensure your review aligns with the specified procedures and requirements.
+=====
+{% endif %}
 
 The output must be a YAML object equivalent to type $PRReview, according to the following Pydantic definitions:
 =====
@@ -126,6 +149,9 @@ class Review(BaseModel):
 {%- if require_can_be_split_review %}
     can_be_split: List[SubPR] = Field(min_items=0, max_items=3, description="Can this PR, which contains {{ num_pr_files }} changed files in total, be divided into smaller sub-PRs with distinct tasks that can be reviewed and merged independently, regardless of the order ? Make sure that the sub-PRs are indeed independent, with no code dependencies between them, and that each sub-PR represent a meaningful independent task. Output an empty list if the PR code does not need to be split.")
 {%- endif %}
+{%- if jira_test_cases %}
+    jira_test_cases: List[dict] = Field(description="A list of JIRA/Zephyr test cases referenced in this PR. For each test case, include its key, name, objective, source (Jira or Zephyr), labels (if present), steps (if present), comments (if present), and a review assessment indicating if the code addresses, partially addresses, or does not address each test case.")
+{%- endif %}
 
 class PRReview(BaseModel):
     review: Review
@@ -189,6 +215,21 @@ review:
       ...
     worst_case: |
       ...
+{%- endif %}
+{%- if jira_test_cases %}
+  jira_test_cases:
+    - key: |
+        ...
+      name: |
+        ...
+      objective: |
+        ...
+      source: |
+        ...
+      labels: [...]
+      review: |
+        ...
+    - ...
 {%- endif %}
 ```
 
@@ -266,6 +307,58 @@ The PR code diff:
 {{ diff|trim }}
 ======
 
+{%- if jira_test_cases %}
+
+Test Cases referenced in this PR:
+=====
+{% for case in jira_test_cases %}
+- {{ case.key }}: {{ case.name }}
+  Source: {{ case.source|title }}
+  Objective: {{ case.objective }}
+  {%- if case.source == 'zephyr' and case.steps %}
+  Steps:
+    {%- for step in case.steps %}
+    - Description: {{ step.description }}
+    {%- endfor %}
+  {%- endif %}
+  {%- if case.source == 'jira' %}
+  {%- if case.labels %}
+  Labels: {{ case.labels|join(', ') }}
+  {%- endif %}
+  {%- if case.comments %}
+  Comments:
+    {%- for comment in case.comments[:3] %}
+    - {{ comment|truncate(100, True, '...') }}
+    {%- endfor %}
+  {%- endif %}
+  {%- if case.attachments %}
+  Attachments:
+    {%- for att in case.attachments %}
+    - {{ att.filename }}
+    {%- endfor %}
+  {%- endif %}
+  {%- endif %}
+{% endfor %}
+{%- endif %}
+=====
+
+{%- if coding_standards and coding_standards.body_value %}
+Coding Standards to Follow:
+=====
+Title: {{ coding_standards.title }}
+=====
+Content:
+=====
+{{ coding_standards.body_value }}
+=====
+{%- endif %}
+
+{%- if confluence_content %}
+MR Review Guidelines:
+=====
+{{ confluence_content }}
+=====
+{%- endif %}
 
 {%- if duplicate_prompt_examples %}
 
@@ -327,6 +420,31 @@ review:
       ...
     worst_case: |
       ...
+{%- endif %}
+{%- if jira_test_cases %}
+  jira_test_cases:
+    - key: |
+        ...
+      name: |
+        ...
+      objective: |
+        ...
+      source: |
+        ...
+      labels: [...]
+      steps:
+        - description: |
+            ...
+          testData: |
+            ...
+          expectedResult: |
+            ...
+        - ...
+      comments: [...]
+      attachments: [...]
+      review: |
+        ...
+    - ...
 {%- endif %}
 ```
 (replace '...' with the actual values)
