@@ -24,30 +24,9 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 script {
-                    echo "Building Docker image: ${env.DOCKERHUB_REPOSITORY}:${env.DOCKER_TAG}"
-                    
-                    // Build Docker image with platform support
                     sh """
-                        # First try to setup buildx
-                        if docker buildx create --use --name multiarch-builder --driver docker-container 2>/dev/null || docker buildx use multiarch-builder 2>/dev/null; then
-                            echo "Using buildx for multi-platform build"
-                            # Build and push multi-platform image
-                            docker buildx build --platform linux/amd64,linux/arm64 \
-                            -t ${env.DOCKERHUB_REPOSITORY}:${env.DOCKER_TAG} \
-                            -f docker/Dockerfile \
-                            --target cli \
-                            --push .
-                        else
-                            echo "Buildx not available, using standard docker build for linux/amd64"
-                            # Build for linux/amd64 explicitly
-                            docker build --platform linux/amd64 \
-                            -t ${env.DOCKERHUB_REPOSITORY}:${env.DOCKER_TAG} \
-                            -f docker/Dockerfile \
-                            --target cli .
-                        fi
+                        docker build . -t ${env.DOCKERHUB_REPOSITORY}:${env.DOCKER_TAG} --target gitlab_webhook -f docker/Dockerfile
                     """
-                    
-                    echo 'Docker image built successfully'
                 }
             }
         }
