@@ -3,7 +3,7 @@ pipeline {
     
     environment {
         // Define your Docker Hub repository and credentials
-        DOCKERHUB_REPOSITORY = "harsham1/test-jen-dock"
+        DOCKERHUB_REPOSITORY = "harsham1/mr-agent"
         DOCKER_TAG = "latest"
         DOCKERHUB_CREDENTIALS = 'docker-hub-credentials'
     }
