@@ -1,11 +1,11 @@
 pipeline {
-    agent any
+    agent {
+        label 'AWS-EC2-CNC'
+    }
     
     environment {
-        // Define your Docker Hub repository and credentials
-        DOCKERHUB_REPOSITORY = "harsham1/mr-agent"
+        DOCKER_REGISTRY = "us-docker.pkg.dev/coverity-cloud-sandbox-dev/test/pr-agent"
         DOCKER_TAG = "latest"
-        DOCKERHUB_CREDENTIALS = 'docker-hub-credentials'
     }
     
     triggers {
@@ -25,7 +25,7 @@ pipeline {
             steps {
                 script {
                     sh """
-                        docker build . -t ${env.DOCKERHUB_REPOSITORY}:${env.DOCKER_TAG} --target gitlab_webhook -f docker/Dockerfile
+                        docker buildx . -t ${env.DOCKER_REGISTRY}:${env.DOCKER_TAG} --platform linux/amd64 -f docker/Dockerfile
                     """
                 }
             }
@@ -37,7 +37,7 @@ pipeline {
                     echo 'Testing Docker image...'
                     
                     // Test the image by running it briefly
-                    sh "docker run --rm --name test-${env.BUILD_NUMBER} -d ${env.DOCKERHUB_REPOSITORY}:${env.DOCKER_TAG} || true"
+                    sh "docker run --rm --name test-${env.BUILD_NUMBER} -d ${env.DOCKER_REGISTRY}:${env.DOCKER_TAG} || true"
                     
                     // You can add more specific tests here based on your application
                     echo 'Docker image test completed'
@@ -45,33 +45,33 @@ pipeline {
             }
         }
         
-        stage('Login to Docker Hub') {
+        stage('Login to Artifact Registry') {
             steps {
                 script {
-                    echo 'Logging into Docker Hub...'
+                    echo 'Logging into Google Artifact Registry...'
                     
-                    // Login to Docker Hub using credentials
-                    withCredentials([usernamePassword(credentialsId: "${env.DOCKERHUB_CREDENTIALS}", 
-                                                    usernameVariable: 'DOCKER_USERNAME', 
-                                                    passwordVariable: 'DOCKER_PASSWORD')]) {
-                        sh 'echo $DOCKER_PASSWORD | docker login -u $DOCKER_USERNAME --password-stdin'
+                    // Login to Google Artifact Registry using credentials
+                    withCredentials([file(credentialsId: 'dockerconfig', variable: 'CONFIGFILE')]) {
+                        def destinationFile = "config.json"
+                        sh "cp ${CONFIGFILE} ${destinationFile}"
+                        echo "Content of ${CONFIGFILE} copied to ${destinationFile}"
                     }
                     
-                    echo 'Successfully logged into Docker Hub'
+                    echo 'Successfully logged into Google Artifact Registry'
                 }
             }
         }
         
-        stage('Push to Docker Hub') {
+        stage('Push to Artifact Registry') {
             steps {
                 script {
-                    echo 'Pushing Docker image to Docker Hub...'
+                    echo 'Pushing Docker image to Google Artifact Registry...'
                     
                     // Push only the latest tag
-                    sh "docker push ${env.DOCKERHUB_REPOSITORY}:${env.DOCKER_TAG}"
+                    sh "docker push ${env.DOCKER_REGISTRY}:${env.DOCKER_TAG}"
                     
                     echo "✅ Docker image pushed successfully!"
-                    echo "🐳 Image available at: ${env.DOCKERHUB_REPOSITORY}:${env.DOCKER_TAG}"
+                    echo "🐳 Image available at: ${env.DOCKER_REGISTRY}:${env.DOCKER_TAG}"
                 }
             }
         }
@@ -83,7 +83,7 @@ pipeline {
                     
                     // Remove local images to save disk space
                     sh """
-                        docker rmi ${env.DOCKERHUB_REPOSITORY}:${env.DOCKER_TAG} || true
+                        docker rmi ${env.DOCKER_REGISTRY}:${env.DOCKER_TAG} || true
                         docker system prune -f || true
                     """
                     
@@ -103,7 +103,7 @@ pipeline {
         }
         success {
             echo '🎉 SUCCESS: Docker image built and pushed successfully!'
-            echo "Check your Docker Hub repository: https://hub.docker.com/r/${env.DOCKERHUB_REPOSITORY}"
+            echo "Check your Google Artifact Registry: https://console.cloud.google.com/artifacts/docker/coverity-cloud-sandbox-dev/us/test/pr-agent"
         }
         failure {
             echo '❌ FAILURE: Pipeline failed. Check the logs for details.'
