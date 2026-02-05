@@ -140,14 +140,18 @@ Below are {{ num_code_suggestions }} AI-generated code suggestions for the Pull 
 {{ suggestion_str|trim }}
 ======
 
+{%- if jira_test_cases %}
 Test Cases referenced in this PR:
 =====
 {{ jira_test_cases }}
 =====
+{%- endif %}
 
+{%- if coding_standards and coding_standards.body_value %}
 Coding Standards to Follow:
 =====
 {{coding_standards }}
+{%- endif %}
 =====
 
 {%- if duplicate_prompt_examples %}

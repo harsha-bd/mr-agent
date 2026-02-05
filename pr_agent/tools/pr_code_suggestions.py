@@ -79,6 +79,8 @@ class PRCodeSuggestions:
 
         if "jira_test_cases" not in self.vars:
             self.vars["jira_test_cases"] = []
+        if "coding_standards" not in self.vars:
+            self.vars["coding_standards"] = {"title": "", "body_value": "", "status": ""}
 
         if get_settings().pr_code_suggestions.get("decouple_hunks", True):
             self.pr_code_suggestions_prompt_system = get_settings().pr_code_suggestions_prompt.system
@@ -944,7 +946,9 @@ class PRCodeSuggestions:
                          'num_code_suggestions': len(suggestion_list),
                          'prev_suggestions_str': prev_suggestions_str,
                          "is_ai_metadata": get_settings().get("config.enable_ai_metadata", False),
-                         'duplicate_prompt_examples': get_settings().config.get('duplicate_prompt_examples', False)}
+                         'duplicate_prompt_examples': get_settings().config.get('duplicate_prompt_examples', False),
+                         'jira_test_cases': self.vars.get('jira_test_cases', []),
+                         'coding_standards': self.vars.get('coding_standards', {"title": "", "body_value": "", "status": ""})}
             environment = Environment(undefined=StrictUndefined)
 
             if dedicated_prompt:
