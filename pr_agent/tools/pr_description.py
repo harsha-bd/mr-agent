@@ -784,19 +784,6 @@ class PRDescription:
                 changes_walkthrough = f"<details{initial_status}> <summary><h3> {PRDescriptionHeader.FILE_WALKTHROUGH.value}</h3></summary>\n\n"
                 changes_walkthrough += f"{changes_walkthrough_table}\n\n"
                 changes_walkthrough += "</details>\n\n"
-            elif key.lower().strip() == 'description':
-                if isinstance(value, list):
-                    value = ', '.join(v.rstrip() for v in value)
-                value = value.replace('\n-', '\n\n-').strip() # makes the bullet points more readable by adding double space
-                pr_body += f"{value}\n"
-            else:
-                # if the value is a list, join its items by comma
-                if isinstance(value, list):
-                    value = ', '.join(v.rstrip() for v in value)
-                pr_body += f"{value}\n"
-            if idx < len(self.data) - 1:
-                pr_body += "\n\n___\n\n"
-            # Special handling for jira_test_cases
             elif key.lower().strip() == 'jira_test_cases':
                 get_logger().debug(f"Processing JIRA test cases in _prepare_pr_answer: key={key}, value={value}")
 
@@ -840,16 +827,6 @@ class PRDescription:
                         get_logger().debug("Test Cases section already exists in PR body, skipping addition")
                 else:
                     get_logger().debug(f"No valid JIRA test cases to process: value={value}, type={type(value)}")
-            elif key.lower().strip() == 'description':
-                if isinstance(value, list):
-                    # Convert dicts to string, otherwise rstrip
-                    def stringify(v):
-                        if isinstance(v, dict):
-                            return yaml.dump(v, default_flow_style=False).strip()
-                        return str(v).rstrip()
-                    value = ', '.join(stringify(v) for v in value)
-                value = value.replace('\n-', '\n\n-').strip()  # makes the bullet points more readable by adding double space
-                pr_body += f"{value}\n"
             else:
                 # if the value is a list, join its items by comma
                 if isinstance(value, list):
