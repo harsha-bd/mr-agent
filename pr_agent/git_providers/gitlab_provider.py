@@ -38,8 +38,15 @@ class GitLabProvider(GitProvider):
         gitlab_access_token = get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN", None)
         if not gitlab_access_token:
             raise ValueError("GitLab personal access token is not set in the config file")
-        # Authentication method selection via configuration
-        auth_method = get_settings().get("GITLAB.AUTH_TYPE", "oauth_token")
+        # Authentication method selection via configuration.
+        # Auto-detect: tokens prefixed with glpat- or glpersonal- are Personal Access Tokens
+        # and must be sent via the PRIVATE-TOKEN header (private_token), not as OAuth Bearer.
+        _PAT_PREFIXES = ("glpat-", "glpersonal-")
+        if isinstance(gitlab_access_token, str) and gitlab_access_token.startswith(_PAT_PREFIXES):
+            default_auth_method = "private_token"
+        else:
+            default_auth_method = "oauth_token"
+        auth_method = get_settings().get("GITLAB.AUTH_TYPE", default_auth_method)
 
         # Basic validation of authentication type
         if auth_method not in ["oauth_token", "private_token"]:
@@ -57,7 +64,8 @@ class GitLabProvider(GitProvider):
             else:  # private_token
                 self.gl = gitlab.Gitlab(
                     url=gitlab_url,
-                    private_token=gitlab_access_token
+                    private_token=gitlab_access_token,
+                    ssl_verify=ssl_verify
                 )
         except Exception as e:
             get_logger().error(f"Failed to create GitLab instance: {e}")
