@@ -1,4 +1,3 @@
-import hashlib
 import json
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
@@ -31,15 +30,15 @@ class GiteaProvider(GitProvider):
         self.pr_url = ""
         self.issue_url = ""
 
-        gitea_access_token = get_settings().get("GITEA.PERSONAL_ACCESS_TOKEN", None)
-        if not gitea_access_token:
+        self.gitea_access_token = get_settings().get("GITEA.PERSONAL_ACCESS_TOKEN", None)
+        if not self.gitea_access_token:
             self.logger.error("Gitea access token not found in settings.")
             raise ValueError("Gitea access token not found in settings.")
 
         self.repo_settings = get_settings().get("GITEA.REPO_SETTING", None)
         configuration = giteapy.Configuration()
         configuration.host = "{}/api/v1".format(self.base_url)
-        configuration.api_key['Authorization'] = f'token {gitea_access_token}'
+        configuration.api_key['Authorization'] = f'token {self.gitea_access_token}'
 
         if get_settings().get("GITEA.SKIP_SSL_VERIFICATION", False):
             configuration.verify_ssl = False
@@ -92,6 +91,7 @@ class GiteaProvider(GitProvider):
                 repo=self.repo
             )
             self.last_commit = self.pr_commits[-1]
+            self.last_commit_id = self.last_commit
             self.base_sha = self.pr.base.sha if self.pr.base.sha else ""
             self.base_ref = self.pr.base.ref if self.pr.base.ref else ""
         elif "issues" in url:
@@ -139,7 +139,7 @@ class GiteaProvider(GitProvider):
                         file_patches[current_file] = '\n'.join(current_patch)
                         current_patch = []
                     current_file = line.split(' b/')[-1]
-                elif line.startswith('@@'):
+                elif line.startswith('@@') and not current_patch:
                     current_patch = [line]
                 elif current_patch:
                     current_patch.append(line)
@@ -222,6 +222,19 @@ class GiteaProvider(GitProvider):
 
     def get_issue_url(self) -> str:
         return self.issue_url
+
+    def get_latest_commit_url(self) -> str:
+        return self.last_commit.html_url
+
+    def get_comment_url(self, comment) -> str:
+        return comment.html_url
+
+    def publish_persistent_comment(self, pr_comment: str,
+                                   initial_header: str,
+                                   update_header: bool = True,
+                                   name='review',
+                                   final_update_message=True):
+        self.publish_persistent_comment_full(pr_comment, initial_header, update_header, name, final_update_message)
 
     def publish_comment(self, comment: str,is_temporary: bool = False) -> None:
         """Publish a comment to the pull request"""
@@ -308,7 +321,7 @@ class GiteaProvider(GitProvider):
 
         if not response:
             self.logger.error("Failed to publish inline comment")
-            return None
+            return
 
         self.logger.info("Inline comment published")
 
@@ -515,6 +528,13 @@ class GiteaProvider(GitProvider):
         self.logger.info(f"Generated link: {link}")
         return link
 
+    def get_pr_id(self):
+        try:
+            pr_id = f"{self.repo}/{self.pr_number}"
+            return pr_id
+        except:
+            return ""
+
     def get_files(self) -> List[Dict[str, Any]]:
         """Get all files in the PR"""
         return [file.get("filename","") for file in self.git_files]
@@ -551,7 +571,7 @@ class GiteaProvider(GitProvider):
         if not self.pr:
             self.logger.error("Failed to get PR branch")
             return ""
-        
+
         if not self.pr.head:
             self.logger.error("PR head not found")
             return ""
@@ -585,11 +605,11 @@ class GiteaProvider(GitProvider):
 
         return [label.name for label in labels]
 
-    def get_repo_settings(self) -> str:
+    def get_repo_settings(self) -> bytes:
         """Get repository settings"""
         if not self.repo_settings:
             self.logger.error("Repository settings not found")
-            return ""
+            return b""
 
         response = self.repo_api.get_file_content(
             owner=self.owner,
@@ -599,9 +619,13 @@ class GiteaProvider(GitProvider):
         )
         if not response:
             self.logger.error("Failed to get repository settings")
-            return ""
+            return b""
 
-        return response
+        # utils.apply_repo_settings() writes this via os.write() and later
+        # calls .decode() on it, so it must be bytes to match the GitHub/
+        # GitLab/Bitbucket contract. get_file_content() decodes the raw bytes
+        # to str, so re-encode here (see issue #2347).
+        return response.encode('utf-8')
 
     def get_user_id(self) -> str:
         """Get the ID of the authenticated user"""
@@ -611,15 +635,20 @@ class GiteaProvider(GitProvider):
         """Check if the provider is supported"""
         return True
 
+    def get_git_repo_url(self, issues_or_pr_url: str) -> str:
+        return f"{self.base_url}/{self.owner}/{self.repo}.git" #base_url / <OWNER>/<REPO>.git
+
     def publish_description(self, pr_title: str, pr_body: str) -> None:
         """Publish PR description"""
-        response = self.repo_api.edit_pull_request(
+        edit_kwargs = dict(
             owner=self.owner,
             repo=self.repo,
             pr_number=self.pr_number if self.enabled_pr else self.issue_number,
-            title=pr_title,
-            body=pr_body
+            body=pr_body,
         )
+        if pr_title is not None:
+            edit_kwargs["title"] = pr_title
+        response = self.repo_api.edit_pull_request(**edit_kwargs)
 
         if not response:
             self.logger.error("Failed to publish PR description")
@@ -685,6 +714,35 @@ class GiteaProvider(GitProvider):
                 continue
             self.logger.info(f"Removed initial comment: {comment.get('comment_id')}")
 
+    #Clone related
+    def _prepare_clone_url_with_token(self, repo_url_to_clone: str) -> str | None:
+        #For example, to clone:
+        #https://github.com/Codium-ai/pr-agent-pro.git
+        #Need to embed inside the github token:
+        #https://<token>@github.com/Codium-ai/pr-agent-pro.git
+
+        gitea_token = self.gitea_access_token
+        gitea_base_url = self.base_url
+        scheme = gitea_base_url.split("://")[0]
+        scheme += "://"
+        if not all([gitea_token, gitea_base_url]):
+            get_logger().error("Either missing auth token or missing base url")
+            return None
+        base_url = gitea_base_url.split(scheme)[1]
+        if not base_url:
+            get_logger().error(f"Base url: {gitea_base_url} has an empty base url")
+            return None
+        if base_url not in repo_url_to_clone:
+            get_logger().error(f"url to clone: {repo_url_to_clone} does not contain {base_url}")
+            return None
+        repo_full_name = repo_url_to_clone.split(base_url)[-1]
+        if not repo_full_name:
+            get_logger().error(f"url to clone: {repo_url_to_clone} is malformed")
+            return None
+
+        clone_url = scheme
+        clone_url += f"{gitea_token}@{base_url}{repo_full_name}"
+        return clone_url
 
 class RepoApi(giteapy.RepositoryApi):
     def __init__(self, client: giteapy.ApiClient):
@@ -693,7 +751,7 @@ class RepoApi(giteapy.RepositoryApi):
         self.logger = get_logger()
         super().__init__(client)
 
-    def create_inline_comment(self, owner: str, repo: str, pr_number: int, body : str ,commit_id : str, comments: List[Dict[str, Any]]) -> None:
+    def create_inline_comment(self, owner: str, repo: str, pr_number: int, body : str ,commit_id : str, comments: List[Dict[str, Any]]):
         body = {
             "body": body,
             "comments": comments,
@@ -747,10 +805,7 @@ class RepoApi(giteapy.RepositoryApi):
     def get_pull_request_diff(self, owner: str, repo: str, pr_number: int) -> str:
         """Get the diff content of a pull request using direct API call"""
         try:
-            token = self.api_client.configuration.api_key.get('Authorization', '').replace('token ', '')
             url = f'/repos/{owner}/{repo}/pulls/{pr_number}.diff'
-            if token:
-                url = f'{url}?token={token}'
 
             response = self.api_client.call_api(
                 url,
@@ -758,7 +813,8 @@ class RepoApi(giteapy.RepositoryApi):
                 path_params={},
                 response_type=None,
                 _return_http_data_only=False,
-                _preload_content=False
+                _preload_content=False,
+                auth_settings=['AuthorizationHeaderToken']
             )
 
             if hasattr(response, 'data'):
@@ -803,10 +859,7 @@ class RepoApi(giteapy.RepositoryApi):
     def get_change_file_pull_request(self, owner: str, repo: str, pr_number: int):
         """Get changed files in the pull request"""
         try:
-            token = self.api_client.configuration.api_key.get('Authorization', '').replace('token ', '')
             url = f'/repos/{owner}/{repo}/pulls/{pr_number}/files'
-            if token:
-                url = f'{url}?token={token}'
 
             response = self.api_client.call_api(
                 url,
@@ -814,7 +867,8 @@ class RepoApi(giteapy.RepositoryApi):
                 path_params={},
                 response_type=None,
                 _return_http_data_only=False,
-                _preload_content=False
+                _preload_content=False,
+                auth_settings=['AuthorizationHeaderToken']
             )
 
             if hasattr(response, 'data'):
@@ -838,10 +892,7 @@ class RepoApi(giteapy.RepositoryApi):
     def get_languages(self, owner: str, repo: str):
         """Get programming languages used in the repository"""
         try:
-            token = self.api_client.configuration.api_key.get('Authorization', '').replace('token ', '')
             url = f'/repos/{owner}/{repo}/languages'
-            if token:
-                url = f'{url}?token={token}'
 
             response = self.api_client.call_api(
                 url,
@@ -849,7 +900,8 @@ class RepoApi(giteapy.RepositoryApi):
                 path_params={},
                 response_type=None,
                 _return_http_data_only=False,
-                _preload_content=False
+                _preload_content=False,
+                auth_settings=['AuthorizationHeaderToken']
             )
 
             if hasattr(response, 'data'):
@@ -872,18 +924,20 @@ class RepoApi(giteapy.RepositoryApi):
         """Get raw file content from a specific commit"""
 
         try:
-            token = self.api_client.configuration.api_key.get('Authorization', '').replace('token ', '')
             url = f'/repos/{owner}/{repo}/raw/{filepath}'
-            if token:
-                url = f'{url}?token={token}&ref={commit_sha}'
+            query_params = []
+            if commit_sha:
+                query_params.append(('ref', commit_sha))
 
             response = self.api_client.call_api(
                 url,
                 'GET',
                 path_params={},
+                query_params=query_params,
                 response_type=None,
                 _return_http_data_only=False,
-                _preload_content=False
+                _preload_content=False,
+                auth_settings=['AuthorizationHeaderToken']
             )
 
             if hasattr(response, 'data'):
@@ -965,10 +1019,7 @@ class RepoApi(giteapy.RepositoryApi):
     def get_pr_commits(self, owner: str, repo: str, pr_number: int):
         """Get all commits in a pull request"""
         try:
-            token = self.api_client.configuration.api_key.get('Authorization', '').replace('token ', '')
             url = f'/repos/{owner}/{repo}/pulls/{pr_number}/commits'
-            if token:
-                url = f'{url}?token={token}'
 
             response = self.api_client.call_api(
                 url,
@@ -976,7 +1027,8 @@ class RepoApi(giteapy.RepositoryApi):
                 path_params={},
                 response_type=None,
                 _return_http_data_only=False,
-                _preload_content=False
+                _preload_content=False,
+                auth_settings=['AuthorizationHeaderToken']
             )
 
             if hasattr(response, 'data'):

@@ -18,7 +18,7 @@ from ..algo.utils import (find_line_number_of_relevant_line_in_file,
                           load_large_diff)
 from ..config_loader import get_settings
 from ..log import get_logger
-from .git_provider import GitProvider
+from .git_provider import GitProvider, get_git_ssl_env
 
 
 class BitbucketServerProvider(GitProvider):
@@ -513,11 +513,17 @@ class BitbucketServerProvider(GitProvider):
 
     # bitbucket does not support labels
     def publish_description(self, pr_title: str, description: str):
+        pr = self.pr
+        if pr_title is None:
+            # Replace-style update: an omitted/stale title would be lost, so
+            # re-fetch to preserve a title edited during the describe run.
+            pr = self._get_pr()
+            self.pr = pr
         payload = {
-            "version": self.pr.version,
+            "version": pr.version,
             "description": description,
-            "title": pr_title,
-            "reviewers": self.pr.reviewers  # needs to be sent otherwise gets wiped
+            "title": pr_title if pr_title is not None else pr.title,
+            "reviewers": pr.reviewers  # needs to be sent otherwise gets wiped
         }
         try:
             self.bitbucket_client.update_pull_request(self.workspace_slug, self.repo_slug, str(self.pr_num), payload)
@@ -561,5 +567,7 @@ class BitbucketServerProvider(GitProvider):
         cli_args = shlex.split(f"git clone -c http.extraHeader='Authorization: Bearer {bearer_token}' "
                                f"--filter=blob:none --depth 1 {repo_url} {dest_folder}")
 
-        subprocess.run(cli_args, check=True,  # check=True will raise an exception if the command fails
+        ssl_env = get_git_ssl_env()
+
+        subprocess.run(cli_args, env=ssl_env, check=True,  # check=True will raise an exception if the command fails
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=operation_timeout_in_seconds)
