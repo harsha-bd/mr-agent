@@ -94,7 +94,7 @@ class ConfluenceMRHandler:
         url = f"{self.base_url}/content/{content_id}?expand=body.storage"
         
         try:
-            response = requests.get(url, headers=self.headers, verify=False)
+            response = requests.get(url, headers=self.headers, verify=True)
             if response.status_code == 200:
                 data = response.json()
                 

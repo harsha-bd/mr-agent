@@ -4,8 +4,8 @@ import base64
 import requests
 import urllib.parse
 import asyncio
-import sys
 from pr_agent.log import get_logger
+from pr_agent.custom_handlers.jira_testcase_handler import GitLabMRHelper
 
 try:
     from requests.auth import HTTPBasicAuth
@@ -15,82 +15,13 @@ except ImportError:
         def __init__(self, username, password):
             self.username = username
             self.password = password
-        
+
         def __call__(self, r):
             import base64
             credentials = f"{self.username}:{self.password}"
             encoded_credentials = base64.b64encode(credentials.encode()).decode()
             r.headers['Authorization'] = f'Basic {encoded_credentials}'
             return r
-
-class GitLabMRHelper:
-    def __init__(self, mr_url, token):
-        self.mr_url = mr_url
-        self.token = token
-        self.project_path, self.mr_id = self.get_project_path_and_mr_id(mr_url)
-        self.source_branch = self.get_source_branch()
-
-    def get_project_path_and_mr_id(self, mr_url):
-        # Remove protocol and domain, split by '/'
-        url = mr_url.split('://', 1)[-1].split('/', 1)[-1]
-        parts = url.strip('/').split('/')
-        try:
-            mr_index = parts.index('merge_requests')
-            if parts[mr_index - 1] == '-':
-                project_path = '/'.join(parts[:mr_index - 1])
-            else:
-                project_path = '/'.join(parts[:mr_index])
-            mr_id = parts[mr_index + 1] 
-            return urllib.parse.quote(project_path, safe=''), mr_id
-        except (ValueError, IndexError):
-            raise ValueError("Invalid MR URL format")
-        
-    def get_file_diffs(self):
-        """Returns a dict: {file_path: [added_lines]}"""
-        mr_data = self.get_mr_changes()
-        diffs = {}
-        for change in mr_data['changes']:
-            diff = change.get('diff', '')
-            added_lines = []
-            for line in diff.split('\n'):
-                if line.startswith('+') and not line.startswith('+++'):
-                    added_lines.append(line[1:])
-            diffs[change['new_path']] = added_lines
-        return diffs
-    
-    def get_mr_changes(self):
-        url = f"https://gitlab.tools.duckutil.net/api/v4/projects/{self.project_path}/merge_requests/{self.mr_id}/changes"
-        headers = {"PRIVATE-TOKEN": self.token}
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        return response.json()
-
-    def get_source_branch(self):
-        mr_data = self.get_mr_changes()
-        return mr_data['source_branch']
-
-    def get_changed_files(self):
-        mr_data = self.get_mr_changes()
-        return [change['new_path'] for change in mr_data['changes']]
-
-    def get_file_content(self, file_path):
-        encoded_path = urllib.parse.quote_plus(file_path)
-        url = f"https://gitlab.tools.duckutil.net/api/v4/projects/{self.project_path}/repository/files/{encoded_path}/raw?ref={self.source_branch}"
-        headers = {"PRIVATE-TOKEN": self.token}
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        return response.text
-    
-    def get_mr_details(self):
-        url = f"https://gitlab.tools.duckutil.net/api/v4/projects/{self.project_path}/merge_requests/{self.mr_id}"
-        headers = {"PRIVATE-TOKEN": self.token}
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        return response.json()
-
-    def get_mr_description(self):
-        mr_details = self.get_mr_details()
-        return mr_details.get("description", "")
 
 
 class JiraTestCaseHandler:
@@ -126,7 +57,7 @@ class JiraTestCaseHandler:
 
         try:
             # Fetch issue details
-            response = requests.get(issue_url, headers=headers, auth=auth, verify=False)
+            response = requests.get(issue_url, headers=headers, auth=auth, verify=True)
             if response.status_code != 200:
                 print(f"Failed to fetch JIRA issue details for {issue_key}: {response.status_code} - {response.text}")
                 return None
@@ -147,7 +78,7 @@ class JiraTestCaseHandler:
 
             # Fetch comments
             comments = []
-            comments_response = requests.get(comment_url, headers=headers, auth=auth, verify=False)
+            comments_response = requests.get(comment_url, headers=headers, auth=auth, verify=True)
             if comments_response.status_code == 200:
                 comments_data = comments_response.json()
                 for comment in comments_data.get("comments", []):
@@ -197,7 +128,7 @@ class JiraTestCaseHandler:
         """Fetches all test steps for a given test case ID from Zephyr Scale."""
         url = f"{self.jira_base_url}/v2/testcases/{test_case_id}/teststeps"
         try:
-            response = requests.get(url, headers=self.auth_header ,  verify=False)
+            response = requests.get(url, headers=self.auth_header ,  verify=True)
             if response.status_code == 200:
                 data = response.json()
                 steps = []
@@ -222,7 +153,7 @@ class JiraTestCaseHandler:
         # First try Zephyr Scale
         url = f"{self.jira_base_url}/v2/testcases/{test_case_id}"
         try:
-            response = requests.get(url, headers=self.auth_header, verify=False)
+            response = requests.get(url, headers=self.auth_header, verify=True)
             if response.status_code == 200:
                 data = response.json()
                 return {

@@ -89,17 +89,23 @@ class Coding_standards_Handler:
     def fetch_content_by_id(self, content_id):
         """
         Fetches content from API by ID and returns title and body storage value.
-        
+
         Args:
             content_id (str): The ID of the content to fetch
-            
+
         Returns:
             dict: Contains 'title' and 'body_value' fields, or error info
         """
+        if not self.use_confluence or not getattr(self, 'base_url', None):
+            return {
+                "id": content_id,
+                "error": "Confluence is not configured or disabled",
+                "status": "error"
+            }
         url = f"{self.base_url}/content/{content_id}?expand=body.storage"
         
         try:
-            response = requests.get(url, headers=self.headers, verify=False)
+            response = requests.get(url, headers=self.headers, verify=True)
             if response.status_code == 200:
                 data = response.json()
                 

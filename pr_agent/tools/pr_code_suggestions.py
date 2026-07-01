@@ -75,13 +75,11 @@ class PRCodeSuggestions:
             "focus_only_on_problems": get_settings().get("pr_code_suggestions.focus_only_on_problems", False),
             "date": datetime.now().strftime('%Y-%m-%d'),
             'duplicate_prompt_examples': get_settings().config.get('duplicate_prompt_examples', False),
-            "coding_standards": {"title": "", "body_value": "", "status": ""}, # Will be populated later if available        
+            "coding_standards": {"title": "", "body_value": "", "status": ""},
         }
 
         if "jira_test_cases" not in self.vars:
             self.vars["jira_test_cases"] = []
-        if "coding_standards" not in self.vars:
-            self.vars["coding_standards"] = {"title": "", "body_value": "", "status": ""}
 
         if get_settings().pr_code_suggestions.get("decouple_hunks", True):
             self.pr_code_suggestions_prompt_system = get_settings().pr_code_suggestions_prompt.system
@@ -116,7 +114,7 @@ class PRCodeSuggestions:
             # Coding standards handling
             try:
                 coding_standards_handler = Coding_standards_Handler(self.git_provider.get_pr_url())
-                coding_standards = await coding_standards_handler.fetch_configured_content()
+                coding_standards = await coding_standards_handler.fetch_coding_standards()
                 # Add to self.vars so it can be used in the prompt
                 self.vars["coding_standards"] = coding_standards
             except Exception as e:

@@ -513,16 +513,12 @@ class PRDescription:
             self.data['jira_test_cases'] = deduplicated_cases
             get_logger().debug(f"Deduplicated AI-provided JIRA test cases: {len(deduplicated_cases)} cases")
 
-            self.data['jira_test_cases'] = deduplicated_cases
-
         if 'changes_diagram' in self.data:
             changes_diagram = self.data.pop('changes_diagram').strip()
             if changes_diagram.startswith('```'):
                 if not changes_diagram.endswith('```'):  # fallback for missing closing
                     changes_diagram += '\n```'
                 self.data['changes_diagram'] = '\n'+ changes_diagram
-        if 'pr_files' in self.data:
-            self.data['pr_files'] = self.data.pop('pr_files')
 
         # Final debug log to see what's in self.data
         get_logger().debug(f"Final self.data keys: {list(self.data.keys())}")
@@ -591,63 +587,17 @@ class PRDescription:
         # Handle test cases if present
         jira_test_cases = self.data.get('jira_test_cases')
         get_logger().debug(f"Processing JIRA test cases in _prepare_pr_answer_with_markers: {jira_test_cases}")
-#        if jira_test_cases:
-#           if isinstance(jira_test_cases, list):  # Only process if there are actual test cases
-#                test_cases_formatted = []
-#                for case in jira_test_cases:
-#                    if isinstance(case, dict):
-                        # Get key and name, using test_case_id as fallback for key
-#                        test_key = case.get('key', case.get('test_case_id', ''))
-#                        name = case.get('name', '')
-#                        source = case.get('source', 'unknown').title()
-                        # Create a minimal representation of each test case
-#                        case_str = f"- **{test_key}** ({source}): {name}"
 
-#                        if 'objective' in case:
-#                            case_str += f"**Objective:** {case.get('objective')}\n\n"
-                        # Add objective if available (keep it brief - limit to 200 chars)
-#                        if 'objective' in case:
-#                            objective = str(case.get('objective'))
-                            # Limit objective length and clean up formatting
-#                            if len(objective) > 200:
-#                                objective = objective[:200] + "..."
-#                            case_str += f"\n  - Objective: {objective}"
-
-
-#                        test_cases_formatted.append(case_str)
- #                   else:
-  #                      test_cases_formatted.append(str(case).rstrip())
-                
-#                jira_content = '\n\n'.join(test_cases_formatted)
-#                jira_content = f"{ai_header}{jira_content}"
-                # Replace the marker if it exists, otherwise append to the body
-#                if re.search(r'<!--\s*pr_agent:jira_test_cases\s*-->', body) or 'pr_agent:jira_test_cases' in body:
-#                    body = body.replace('pr_agent:jira_test_cases', jira_content)
-#                else:
-                    # Add test cases section if marker doesn't exist
-#                    body += f"\n\n### **Test Cases**\n\n{jira_content}"
-
-                
-                # Check if the body already contains a Test Cases section to avoid duplication
-#                if re.search(r'### \*\*Test Cases\*\*', body):
-#                    get_logger().debug(f"Test Cases section already exists, skipping addition")
-                # Replace the marker if it exists
-#                elif re.search(r'<!--\s*pr_agent:jira_test_cases\s*-->', body) or 'pr_agent:jira_test_cases' in body:
-#                    body = body.replace('pr_agent:jira_test_cases', jira_content)
-#                else:
-                    # Add test cases section if marker doesn't exist and no test cases section yet
-#                    body += f"\n\n### **Test Cases**\n\n{jira_content}"
-        
-        # First check if there's already a test cases section in the body
-        # First check if there's already a test cases section in the body (more flexible regex)
-        has_test_cases_section = re.search(r'(?i)(?:###?\s*\*?\*?|^|\n)\s*(?:jira\s+)?test\s*cases?\s*\*?\*?', body) is not None
-        get_logger().debug(f"Has existing Test Cases section: {has_test_cases_section}")
-        
-        # Then check if we have test case markers in the body
-        # Check for both escaped asterisks (in regex) and literal asterisks (in actual content)
-        has_test_cases_section = (re.search(r'### \*\*Test Cases\*\*', body) is not None or 
-                                 '### **Test Cases**' in body)
-        get_logger().debug(f"Has JIRA test case markers: {has_test_case_markers}")
+        # Check for a template marker that should be replaced with actual test case content
+        has_test_case_markers = (
+            'pr_agent:jira_test_cases' in body or
+            re.search(r'<!--\s*pr_agent:jira_test_cases\s*-->', body) is not None
+        )
+        # Check if a rendered Test Cases section already exists (broad match to avoid duplicates)
+        has_test_cases_section = re.search(
+            r'(?i)(?:###?\s*\*?\*?|^|\n)\s*(?:jira\s+)?test\s*cases?\s*\*?\*?', body
+        ) is not None
+        get_logger().debug(f"Has test case markers: {has_test_case_markers}, has existing section: {has_test_cases_section}")
         
         # Only process and add test cases if we have them, and either:
         # 1. We have markers to replace, or
