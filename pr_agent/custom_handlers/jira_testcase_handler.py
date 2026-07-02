@@ -188,6 +188,9 @@ class JiraTestCaseHandler:
         for test_case_id in sorted(test_case_ids):
             info = await asyncio.to_thread(self.fetch_test_case_info, test_case_id)
             steps = await asyncio.to_thread(self.fetch_test_case_steps, test_case_id)
+            # source is 'zephyr' when the Zephyr Scale API returned a valid record,
+            # 'unknown' when the call failed (not found, auth error, etc.)
+            source = "zephyr" if not info.get("error") else "unknown"
             results.append({
                 "test_case_id": test_case_id,
                 "id": info.get("id"),
@@ -195,7 +198,8 @@ class JiraTestCaseHandler:
                 "name": info.get("name"),
                 "objective": info.get("objective"),
                 "status": info.get("status", "N/A"),
-                "steps": steps,  # <-- add this line
+                "source": source,
+                "steps": steps,
             })
         # print(results)
         return results

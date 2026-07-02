@@ -488,13 +488,35 @@ class PRDescription:
 
         # Special handling for jira_test_cases to prevent duplication
         # If we have jira_test_cases from both the AI prediction and the JiraTestCaseHandler,
-        # prioritize the ones from the handler (self.vars) as they're more reliable
+        # prioritize the ones from the handler (self.vars) as they're more reliable,
+        # but fall back to AI-generated values for fields the handler could not populate (e.g. name/objective
+        # when the test case is not found in Zephyr Scale).
         if self.vars.get("jira_test_cases") and len(self.vars["jira_test_cases"]) > 0:
 
-            # Always use the fresh test cases from the handler to avoid duplication
-            # The handler fetches current test cases, so this is the most reliable source
-            self.data['jira_test_cases'] = self.vars["jira_test_cases"]
-            get_logger().debug(f"Using {len(self.vars['jira_test_cases'])} JIRA test cases from handler (replaces any AI prediction)")
+            # Build a lookup of AI-generated cases by key so we can use them as fallback
+            ai_cases_by_key = {}
+            for ai_case in self.data.get('jira_test_cases', []):
+                if isinstance(ai_case, dict):
+                    ai_key = ai_case.get('key', ai_case.get('test_case_id', ''))
+                    if ai_key:
+                        ai_cases_by_key[ai_key] = ai_case
+
+            merged_cases = []
+            for handler_case in self.vars["jira_test_cases"]:
+                if not isinstance(handler_case, dict):
+                    merged_cases.append(handler_case)
+                    continue
+                handler_key = handler_case.get('key', handler_case.get('test_case_id', ''))
+                ai_case = ai_cases_by_key.get(handler_key, {})
+                merged = dict(handler_case)
+                # For fields the handler could not populate, use the AI-generated value
+                for field in ('name', 'objective', 'source'):
+                    if not merged.get(field) and ai_case.get(field):
+                        merged[field] = ai_case[field]
+                merged_cases.append(merged)
+
+            self.data['jira_test_cases'] = merged_cases
+            get_logger().debug(f"Using {len(merged_cases)} JIRA test cases from handler (with AI fallback for missing fields)")
 
  
         elif 'jira_test_cases' in self.data:
@@ -614,15 +636,15 @@ class PRDescription:
                 if isinstance(case, dict):
                     # Get key and name, using test_case_id as fallback for key
                     test_key = case.get('key', case.get('test_case_id', ''))
-                    name = case.get('name', '')
+                    name = ' '.join((case.get('name') or '').split())  # strip & collapse newlines
                     source = case.get('source', 'unknown').title()
                     # Create a minimal representation of each test case
                     case_str = f"- **{test_key}** ({source}): {name}"
 
                     # Add objective if available (keep it brief - limit to 200 chars)
-                    if 'objective' in case:
-                        objective = str(case.get('objective'))
-                        # Limit objective length and clean up formatting
+                    objective = case.get('objective')
+                    if objective is not None:
+                        objective = ' '.join(str(objective).split())  # strip & collapse newlines
                         if len(objective) > 200:
                             objective = objective[:200] + "..."
                         case_str += f"\n  - Objective: {objective}"
@@ -711,6 +733,8 @@ class PRDescription:
                 continue
             if key == 'pr_files':
                 value = self.file_label_dict
+            elif key.lower().strip() == 'jira_test_cases':
+                pass  # heading is emitted only when content exists, in the elif block below
             else:
                 key_publish = key.rstrip(':').replace("_", " ").capitalize()
                 if key_publish == "Type":
@@ -742,41 +766,29 @@ class PRDescription:
                 if isinstance(value, list) and value:  # Only process if there are actual test cases
                     get_logger().debug(f"Found {len(value)} JIRA test cases to process")
 
-                    # Check if there's already a test cases section to avoid duplication
-                    has_existing_test_cases = ('### **Test Cases**' in pr_body or 
-                                             re.search(r'### \*\*Test Cases\*\*', pr_body) is not None)
-                    
-                    if not has_existing_test_cases:
-                        # Format jira test cases with better structure
-                        # Add a section header for test cases
-                        pr_body += "### **Test Cases**\n\n"
-                        test_cases_formatted = []
-                        for case in value:
-                            if isinstance(case, dict):
-                                # Get key and name, using test_case_id as fallback for key
-                                test_key = case.get('key', case.get('test_case_id', ''))
-                                name = case.get('name', '')
-                                source = case.get('source', 'unknown').title()
-                                # Create a minimal representation of each test case
-                                case_str = f"- **{test_key}** ({source}): {name}"
+                    test_cases_formatted = []
+                    for case in value:
+                        if isinstance(case, dict):
+                            test_key = case.get('key', case.get('test_case_id', ''))
+                            name = ' '.join((case.get('name') or '').split())  # strip & collapse newlines
+                            source = (case.get('source') or 'unknown').title()
+                            case_str = f"- **{test_key}** ({source}): {name}"
 
-                                # Add objective if available (keep it brief - limit to 200 chars)
-                                if 'objective' in case:
-                                    objective = str(case.get('objective'))
-                                    # Limit objective length and clean up formatting
-                                    if len(objective) > 200:
-                                        objective = objective[:200] + "..."
-                                    case_str += f"\n  - Objective: {objective}"
+                            objective = case.get('objective')
+                            if objective is not None:
+                                objective = ' '.join(str(objective).split())  # strip & collapse newlines
+                                if len(objective) > 200:
+                                    objective = objective[:200] + "..."
+                                case_str += f"\n  - Objective: {objective}"
 
-                                test_cases_formatted.append(case_str)
-                            else:
-                                test_cases_formatted.append(str(case).rstrip())
-                        
-                        value = '\n\n'.join(test_cases_formatted)
-                        pr_body += f"{value}\n"
+                            test_cases_formatted.append(case_str)
+                        else:
+                            test_cases_formatted.append(str(case).rstrip())
+
+                    if test_cases_formatted:
+                        pr_body += f"### **Jira test cases**\n\n"
+                        pr_body += '\n\n'.join(test_cases_formatted) + "\n"
                         get_logger().debug(f"Added JIRA test cases to PR body: {len(test_cases_formatted)} cases")
-                    else:
-                        get_logger().debug("Test Cases section already exists in PR body, skipping addition")
                 else:
                     get_logger().debug(f"No valid JIRA test cases to process: value={value}, type={type(value)}")
             else:

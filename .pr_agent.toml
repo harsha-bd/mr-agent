@@ -3,6 +3,12 @@
 # service. It is NOT read by the open-source pr-agent in this repository; some keys
 # below (e.g. the [review_agent] section) only exist in that hosted agent.
 
+[pr_code_suggestions]
+num_code_suggestions_per_chunk = 8   # suggestions asked from AI per diff chunk (default: 3)
+max_number_of_calls = 8              # max diff chunks processed (default: 3)
+final_clip_factor = 1.0              # don't discard any suggestions (default: 0.8)
+suggestions_score_threshold = 0      # keep all scored suggestions (default: 0)
+
 [pr_reviewer]
 enable_review_labels_effort = true
 enable_auto_approval = true

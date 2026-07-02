@@ -175,6 +175,7 @@ class PRReviewer:
             try:
                 coding_standards_handler = Coding_standards_Handler(self.git_provider.get_pr_url())
                 coding_standards = await coding_standards_handler.fetch_coding_standards()
+                coding_standards.setdefault('body_value', '')
                 # Add to self.vars so it can be used in the prompt
                 self.vars["coding_standards"] = coding_standards
             except Exception as e:
@@ -185,6 +186,7 @@ class PRReviewer:
             try:
                 confluence_handler = ConfluenceMRHandler(merge_request_url=self.pr_url)
                 confluence_content = await confluence_handler.get_confluence_content_async()
+                confluence_content.setdefault('body_value', '')
                 # Add to self.vars as a separate field
                 self.vars["confluence_content"] = confluence_content
             except Exception as e:

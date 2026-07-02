@@ -115,6 +115,7 @@ class PRCodeSuggestions:
             try:
                 coding_standards_handler = Coding_standards_Handler(self.git_provider.get_pr_url())
                 coding_standards = await coding_standards_handler.fetch_coding_standards()
+                coding_standards.setdefault('body_value', '')
                 # Add to self.vars so it can be used in the prompt
                 self.vars["coding_standards"] = coding_standards
             except Exception as e:

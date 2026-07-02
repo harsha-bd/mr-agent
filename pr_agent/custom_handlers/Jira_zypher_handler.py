@@ -7,6 +7,20 @@ import asyncio
 from pr_agent.log import get_logger
 from pr_agent.custom_handlers.jira_testcase_handler import GitLabMRHelper
 
+
+def _to_plain_text(value) -> str:
+    """Strip HTML tags and collapse all whitespace to a single space."""
+    if not value:
+        return ""
+    text = str(value)
+    # Remove HTML tags
+    text = re.sub(r'<[^>]+>', ' ', text)
+    # Decode common HTML entities
+    text = text.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>') \
+               .replace('&nbsp;', ' ').replace('&#39;', "'").replace('&quot;', '"')
+    # Collapse all whitespace (newlines, tabs, multiple spaces) to a single space
+    return ' '.join(text.split())
+
 try:
     from requests.auth import HTTPBasicAuth
 except ImportError:
@@ -27,18 +41,21 @@ except ImportError:
 class JiraTestCaseHandler:
     def __init__(self, pr_url: str):
         self.jira_base_url = "https://api.zephyrscale.smartbear.com"
-        self.jira_token = os.getenv("ZEPHYR_SCALE_TOKEN")  # Set your JWT token in env var
+        self.jira_token = os.getenv("ZEPHYR_SCALE_TOKEN")
+        if not self.jira_token:
+            get_logger().warning("ZEPHYR_SCALE_TOKEN env var is not set — Zephyr Scale API calls will fail with 401")
         self.auth_header = {
             "Authorization": f"Bearer {self.jira_token}",
             "Content-Type": "application/json"
         }
         self.pr_url = pr_url
-        # self.git_provider = get_git_provider_with_context(pr_url)
-        
+
         # JIRA credentials for issue fetching
-        self.jira_domain = os.getenv("JIRA_DOMAIN")  # e.g., "blackduck"
+        self.jira_domain = os.getenv("JIRA_DOMAIN")  # e.g., "synopsyssig"
         self.jira_email = os.getenv("JIRA_EMAIL")
         self.jira_api_token = os.getenv("JIRA_API_TOKEN")
+        if not all([self.jira_domain, self.jira_email, self.jira_api_token]):
+            get_logger().warning("JIRA_DOMAIN / JIRA_EMAIL / JIRA_API_TOKEN not fully set — Jira API fallback will be skipped")
     
     def fetch_jira_issue_info(self, issue_key):
         """Fetches JIRA issue information using Atlassian REST API."""
@@ -159,8 +176,8 @@ class JiraTestCaseHandler:
                 return {
                     "id": data.get("id"),
                     "key": data.get("key"),
-                    "name": data.get("name"),
-                    "objective": data.get("objective"),
+                    "name": _to_plain_text(data.get("name")),
+                    "objective": _to_plain_text(data.get("objective")),
                     "status": data.get("status", {}).get("name", "N/A"),
                     "source": "zephyr"
                 }
