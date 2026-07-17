@@ -26,7 +26,7 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import (AzureDevopsProvider, GithubProvider,
                                     GitLabProvider, get_git_provider,
                                     get_git_provider_with_context)
-from pr_agent.git_providers.git_provider import get_main_pr_language, GitProvider
+from pr_agent.git_providers.git_provider import get_main_pr_language, GitProvider, IncrementalPR
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.pr_description import insert_br_after_x_chars
@@ -40,6 +40,20 @@ class PRCodeSuggestions:
                  ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
 
         self.git_provider = get_git_provider_with_context(pr_url)
+
+        # Parse -i flag for incremental mode (only suggest on files changed since last run)
+        self.incremental = IncrementalPR(False)
+        if args and '-i' in args:
+            self.incremental = IncrementalPR(True)
+            # Use suggestions-comment as anchor (independent of when /review ran)
+            if hasattr(self.git_provider, 'get_incremental_commits_for_suggestions'):
+                self.git_provider.get_incremental_commits_for_suggestions(self.incremental)
+            elif hasattr(self.git_provider, 'get_incremental_commits'):
+                self.git_provider.get_incremental_commits(self.incremental)
+            else:
+                get_logger().info("Incremental improve not supported for this git provider — running full improve")
+                self.incremental = IncrementalPR(False)
+
         self.main_language = get_main_pr_language(
             self.git_provider.get_languages(), self.git_provider.get_files()
         )
@@ -105,6 +119,24 @@ class PRCodeSuggestions:
             if not self.git_provider.get_files():
                 get_logger().info(f"PR has no files: {self.pr_url}, skipping code suggestions")
                 return None
+
+            # Incremental improve: skip entirely if no new files since last run
+            if self.incremental.is_incremental:
+                unreviewed = getattr(self.git_provider, 'unreviewed_files_set', {})
+                if not unreviewed:
+                    get_logger().info("Incremental improve: no new files changed since last run — skipping")
+                    if get_settings().config.publish_output:
+                        self.git_provider.publish_comment(
+                            "**Incremental Improve Skipped** — no files changed since the last suggestions run.")
+                    return None
+                # Check if developer has acknowledged all open suggestions
+                if self._all_suggestions_closed():
+                    get_logger().info("Incremental improve: all previous suggestions resolved/acknowledged — skipping")
+                    if get_settings().config.publish_output:
+                        self.git_provider.publish_comment(
+                            "## ✅ Improve Sign-off\n\nAll previous code suggestions have been "
+                            "resolved or acknowledged. No new suggestions for the latest commit(s).")
+                    return None
             # --- Add JIRA block here ---
             try:
                 jira_handler = JiraTestCaseHandler(self.git_provider.get_pr_url())
@@ -130,6 +162,32 @@ class PRCodeSuggestions:
             relevant_configs = {'pr_code_suggestions': dict(get_settings().pr_code_suggestions),
                                 'config': dict(get_settings().config)}
             get_logger().debug("Relevant configs", artifacts=relevant_configs)
+
+            # For incremental runs: inject ALL existing suggestion threads so the AI
+            # never repeats something already posted — whether the dev has resolved it or not.
+            if self.incremental.is_incremental:
+                ctx = self._get_existing_suggestion_context()
+                ack_block = ""
+                if ctx['open']:
+                    ack_block += (
+                        "\n\nThe following suggestions are ALREADY posted as open threads on this MR. "
+                        "Do NOT repeat or suggest anything similar to these — they are being worked on:\n"
+                        + "".join(f"- {s}\n" for s in ctx['open'])
+                    )
+                if ctx['acknowledged']:
+                    ack_block += (
+                        "\n\nThe following suggestions were acknowledged by the developer as 'not required'. "
+                        "Do NOT suggest anything similar:\n"
+                        + "".join(f"- {s}\n" for s in ctx['acknowledged'])
+                    )
+                if ack_block:
+                    get_logger().info(
+                        f"Incremental improve: excluding {len(ctx['open'])} open + "
+                        f"{len(ctx['acknowledged'])} acknowledged suggestion(s) from prompt"
+                    )
+                    self.vars["extra_instructions"] = (
+                        (self.vars.get("extra_instructions") or "") + ack_block
+                    )
 
             # publish "Preparing suggestions..." comments
             if (get_settings().config.publish_output and get_settings().config.publish_output_progress and
@@ -206,6 +264,33 @@ class PRCodeSuggestions:
                     await self.push_inline_code_suggestions(data)
                     if self.progress_response:
                         self.git_provider.remove_comment(self.progress_response)
+                    # Post an anchor comment so /improve -i can track which commit was last covered.
+                    # This is needed when commitable_code_suggestions=true (inline mode) because
+                    # no persistent "## PR Code Suggestions" comment is created in that path.
+                    if self.incremental.is_incremental or get_settings().pr_code_suggestions.get(
+                            'commitable_code_suggestions', False):
+                        try:
+                            last_commit_sha = self.git_provider.get_latest_commit_url().split('/')[-1][:7]
+                            anchor_body = (
+                                f"## PR Code Suggestions ✨\n"
+                                f"<!-- {last_commit_sha} -->\n"
+                                f"Inline suggestions posted up to commit `{last_commit_sha}`."
+                            )
+                            # Update existing anchor comment if present, else create one
+                            existing = None
+                            try:
+                                for c in self.git_provider.get_issue_comments():
+                                    if (getattr(c, 'body', '') or '').startswith("## PR Code Suggestions ✨"):
+                                        existing = c
+                                        break
+                            except Exception:
+                                pass
+                            if existing:
+                                self.git_provider.edit_comment(existing, anchor_body)
+                            else:
+                                self.git_provider.publish_comment(anchor_body)
+                        except Exception as e:
+                            get_logger().warning(f"Could not post improve anchor comment: {e}")
             else:
                 get_logger().info('Code suggestions generated for PR, but not published since publish_output is False.')
                 pr_body = self.generate_summarized_suggestions(data)
@@ -236,6 +321,93 @@ class PRCodeSuggestions:
         else:
             pr_body += ' <!-- approve and fold suggestions self-review -->'
         return pr_body
+
+    def _get_existing_suggestion_context(self) -> dict:
+        """
+        Single source of truth for all PR-Agent inline suggestion threads.
+        Result is cached per-instance so mr.discussions.list() is only called once per run.
+        Returns:
+          'open'         — threads that exist but are NOT resolved or acknowledged
+          'acknowledged' — threads where a dev reply contains an acknowledged keyword.
+          'total'        — total PR-Agent suggestion thread count.
+        """
+        # Return cached result if already fetched this run
+        if hasattr(self, '_suggestion_context_cache') and self._suggestion_context_cache is not None:
+            return self._suggestion_context_cache
+        result = {'open': [], 'acknowledged': [], 'total': 0}
+        try:
+            keywords = [k.lower() for k in get_settings().pr_code_suggestions.get(
+                'acknowledged_keywords',
+                ['acknowledged', 'no fix needed', 'wontfix', 'intentional', 'by design', 'not required']
+            )]
+            if not hasattr(self.git_provider, 'mr'):
+                return result
+
+            discussions = self.git_provider.mr.discussions.list(get_all=True)
+            for discussion in discussions:
+                notes = discussion.attributes.get('notes', []) or []
+                first_body = (notes[0].get('body', '') if notes else '') or ''
+                if not first_body.startswith('**Suggestion:**'):
+                    continue  # not a PR-Agent suggestion
+
+                result['total'] += 1
+
+                # Extract the suggestion_content for prompt injection
+                match = re.search(r'\*\*Suggestion:\*\*\s+(.+?)\s+\[', first_body, re.DOTALL)
+                summary = (match.group(1).strip() if match
+                           else first_body.split('\n')[0].replace('**Suggestion:**', '').strip())
+
+                is_resolved = discussion.attributes.get('resolved', False)
+                has_ack = any(
+                    kw in (reply.get('body', '') or '').lower()
+                    for reply in notes[1:]
+                    for kw in keywords
+                )
+
+                if has_ack:
+                    result['acknowledged'].append(summary)
+                elif not is_resolved:
+                    # Thread exists but dev hasn't acknowledged or resolved it yet
+                    result['open'].append(summary)
+                # resolved (Apply suggestion button used) → don't inject; code is fixed
+
+        except Exception as e:
+            get_logger().warning(f"Could not scan suggestion threads: {e}")
+        self._suggestion_context_cache = result
+        return result
+
+    def _all_suggestions_closed(self) -> bool:
+        """
+        Returns True when EVERY PR-Agent suggestion thread is either resolved or
+        acknowledged, meaning no open work remains from the previous improve run.
+        Triggers the sign-off comment and skips the current improve run.
+        """
+        try:
+            if hasattr(self.git_provider, 'mr'):
+                ctx = self._get_existing_suggestion_context()
+                if ctx['total'] == 0:
+                    return False
+                all_closed = len(ctx['open']) == 0
+                if all_closed:
+                    get_logger().info(
+                        f"Incremental improve: all {ctx['total']} suggestion thread(s) resolved/acknowledged"
+                    )
+                return all_closed
+
+            # Fallback for non-GitLab: check anchor comment for ✅ rows only
+            comments = list(self.git_provider.get_issue_comments())
+            suggestions_comment = next(
+                (c for c in reversed(comments)
+                 if (getattr(c, 'body', '') or '').startswith("## PR Code Suggestions")),
+                None
+            )
+            if not suggestions_comment:
+                return False
+            rows = re.findall(r'<tr>(.*?)</tr>', suggestions_comment.body, re.DOTALL)
+            return bool(rows) and all('✅' in row for row in rows)
+        except Exception as e:
+            get_logger().warning(f"Could not check suggestion closure status: {e}")
+            return False
 
     async def publish_no_suggestions(self):
         pr_body = "## PR Code Suggestions ✨\n\nNo code suggestions found for the PR."

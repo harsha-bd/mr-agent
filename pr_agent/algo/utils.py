@@ -153,6 +153,7 @@ def convert_to_markdown_v2(output_data: dict,
         "Estimated effort to review [1-5]": "⏱️",
         "Contribution time cost estimate": "⏳",
         "Ticket compliance check": "🎫",
+        "Previous issues status": "📋",
     }
     markdown_text = ""
     if not incremental_review:
@@ -311,6 +312,42 @@ def convert_to_markdown_v2(output_data: dict,
                         get_logger().exception(f"Failed to process 'Recommended focus areas for review': {e}")
                 if gfm_supported:
                     markdown_text += f"</td></tr>\n"
+        elif 'previous issues status' in key_nice.lower():
+            if value and isinstance(value, list):
+                STATUS_EMOJI = {'addressed': '✅', 'partially addressed': '⚠️',
+                                'not addressed': '❌', 'acknowledged by developer': '🙋'}
+                if gfm_supported:
+                    markdown_text += f"<tr><td>📋&nbsp;<strong>Previous review issues — status</strong><br><br>\n\n"
+                    for item in value:
+                        try:
+                            f = item.get('relevant_file', '').strip()
+                            h = item.get('issue_header', '').strip()
+                            s = item.get('status', '').strip()
+                            n = item.get('notes', '').strip()
+                            icon = STATUS_EMOJI.get(s.lower(), '❓')
+                            markdown_text += f"{icon}&nbsp;<code>{f}</code>&nbsp;—&nbsp;<strong>{h}</strong>: {s}"
+                            if n:
+                                markdown_text += f"<br><em>{n}</em>"
+                            markdown_text += "<br>\n"
+                        except Exception:
+                            pass
+                    markdown_text += f"</td></tr>\n"
+                else:
+                    markdown_text += f"### 📋 Previous review issues — status\n\n"
+                    for item in value:
+                        try:
+                            f = item.get('relevant_file', '').strip()
+                            h = item.get('issue_header', '').strip()
+                            s = item.get('status', '').strip()
+                            n = item.get('notes', '').strip()
+                            icon = STATUS_EMOJI.get(s.lower(), '❓')
+                            markdown_text += f"- {icon} `{f}` — **{h}**: {s}"
+                            if n:
+                                markdown_text += f" _{n}_"
+                            markdown_text += "\n"
+                        except Exception:
+                            pass
+                    markdown_text += "\n"
         else:
             if gfm_supported:
                 markdown_text += f"<tr><td>"

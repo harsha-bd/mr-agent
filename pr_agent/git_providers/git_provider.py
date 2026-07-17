@@ -534,8 +534,13 @@ class IncrementalPR:
 
     @property
     def first_new_commit_sha(self):
-        return None if self.first_new_commit is None else self.first_new_commit.sha
+        if self.first_new_commit is None:
+            return None
+        # GitHub commits expose .sha; GitLab commits expose .id
+        return getattr(self.first_new_commit, 'sha', None) or getattr(self.first_new_commit, 'id', None)
 
     @property
     def last_seen_commit_sha(self):
-        return None if self.last_seen_commit is None else self.last_seen_commit.sha
+        if self.last_seen_commit is None:
+            return None
+        return getattr(self.last_seen_commit, 'sha', None) or getattr(self.last_seen_commit, 'id', None)

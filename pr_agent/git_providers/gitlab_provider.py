@@ -2,6 +2,7 @@ import difflib
 import hashlib
 import re
 import urllib.parse
+from datetime import datetime
 from typing import Any, Optional, Tuple, Union
 from urllib.parse import parse_qs, urlparse
 
@@ -15,13 +16,14 @@ from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import decode_if_bytes
 from ..algo.language_handler import is_valid_file
-from ..algo.utils import (clip_tokens,
+from ..algo.utils import (PRReviewHeader,
+                          clip_tokens,
                           find_line_number_of_relevant_line_in_file,
                           load_large_diff)
 from ..config_loader import get_settings
 from ..log import get_logger
 from .git_provider import (MAX_FILES_ALLOWED_FULL, GitProvider,
-                           get_cached_global_settings)
+                           IncrementalPR, get_cached_global_settings)
 
 
 class DiffNotFoundError(Exception):
@@ -418,6 +420,10 @@ class GitLabProvider(GitProvider):
         # filter files using [ignore] patterns
         raw_changes = self.mr.changes().get('changes', [])
         raw_changes = self._expand_submodule_changes(raw_changes)
+        # for incremental review, restrict to files changed in new commits only
+        if hasattr(self, 'unreviewed_files_set') and self.unreviewed_files_set and \
+                isinstance(self.incremental, IncrementalPR) and self.incremental.is_incremental:
+            raw_changes = [c for c in raw_changes if c.get('new_path') in self.unreviewed_files_set]
         diffs_original = raw_changes
         diffs = filter_ignored(diffs_original, 'gitlab')
         if diffs != diffs_original:
@@ -487,11 +493,151 @@ class GitLabProvider(GitProvider):
         return diff_files
 
     def get_files(self) -> list:
+        if hasattr(self, 'unreviewed_files_set') and self.unreviewed_files_set and \
+                isinstance(self.incremental, IncrementalPR) and self.incremental.is_incremental:
+            return list(self.unreviewed_files_set.keys())
         if not self.git_files:
             raw_changes = self.mr.changes().get('changes', [])
             raw_changes = self._expand_submodule_changes(raw_changes)
             self.git_files = [c.get('new_path') for c in raw_changes if c.get('new_path')]
         return self.git_files
+
+    def get_incremental_commits(self, incremental=IncrementalPR(False)):
+        self.incremental = incremental
+        if self.incremental.is_incremental:
+            self.unreviewed_files_set = dict()
+            self._get_incremental_commits()
+
+    def get_incremental_commits_for_suggestions(self, incremental=IncrementalPR(False)):
+        """
+        Incremental anchor for /improve -i.
+        Reads the commit SHA embedded in the existing suggestions comment body
+        (<!-- abc1234 -->) and returns only commits pushed AFTER that SHA.
+        Falls back to full improve when no previous suggestions comment exists.
+        """
+        self.incremental = incremental
+        if not self.incremental.is_incremental:
+            return
+        self.unreviewed_files_set = dict()
+        try:
+            if not getattr(self, 'pr_commits', None):
+                self.pr_commits = list(reversed(list(self.mr.commits())))
+            if not getattr(self, "comments", None):
+                self.comments = self.mr.notes.list(get_all=True)
+
+            # Find the last suggestions comment (newest first)
+            suggestions_comment = None
+            for note in reversed(self.comments):
+                if (getattr(note, 'body', '') or '').startswith("## PR Code Suggestions"):
+                    suggestions_comment = note
+                    break
+
+            if not suggestions_comment:
+                get_logger().info("No previous suggestions comment found, will run full improve")
+                self.incremental.is_incremental = False
+                return
+
+            # Extract the commit SHA anchor embedded as <!-- abc1234 --> in the comment body
+            body = suggestions_comment.body or ''
+            sha_match = re.search(r'<!--\s*([0-9a-f]{7,40})\s*-->', body)
+            if not sha_match:
+                get_logger().info("No commit SHA marker found in suggestions comment, will run full improve")
+                self.incremental.is_incremental = False
+                return
+
+            last_covered_sha = sha_match.group(1)
+            get_logger().info(f"Incremental improve anchor commit: {last_covered_sha}")
+
+            # Find the index of the anchor commit in the (chronological) commit list
+            anchor_index = None
+            for i, commit in enumerate(self.pr_commits):
+                if commit.id.startswith(last_covered_sha) or commit.id[:7] == last_covered_sha:
+                    anchor_index = i
+                    break
+
+            if anchor_index is None:
+                get_logger().info(
+                    f"Anchor commit {last_covered_sha} not found in MR — will run full improve"
+                )
+                self.incremental.is_incremental = False
+                return
+
+            new_commits = self.pr_commits[anchor_index + 1:]
+            if not new_commits:
+                get_logger().info("No new commits since last improve run")
+                return  # unreviewed_files_set stays empty → skipped in run()
+
+            project = self.gl.projects.get(self.id_project)
+            for commit in new_commits:
+                if commit.message.startswith("Merge branch"):
+                    continue
+                try:
+                    diffs = project.commits.get(commit.id).diff()
+                    self.unreviewed_files_set.update(
+                        {d['new_path']: d['new_path'] for d in diffs if d.get('new_path')}
+                    )
+                except Exception as e:
+                    get_logger().warning(f"Could not get diff for commit {commit.id}: {e}")
+
+            get_logger().info(
+                f"Incremental improve: {len(self.unreviewed_files_set)} files changed since last suggestions run"
+            )
+        except Exception as e:
+            get_logger().warning(f"Incremental improve setup failed: {e}, falling back to full improve")
+            self.incremental.is_incremental = False
+            self.unreviewed_files_set = dict()
+
+    def _get_incremental_commits(self):
+        if not getattr(self, 'pr_commits', None):
+            # GitLab returns commits newest-first; reverse to chronological order
+            self.pr_commits = list(reversed(list(self.mr.commits())))
+
+        self.previous_review = self.get_previous_review(full=True, incremental=True)
+        if self.previous_review:
+            self.incremental.commits_range = self.get_commit_range()
+            project = self.gl.projects.get(self.id_project)
+            for commit in self.incremental.commits_range:
+                if commit.message.startswith("Merge branch"):
+                    get_logger().info(f"Skipping merge commit: {commit.message}")
+                    continue
+                try:
+                    commit_diffs = project.commits.get(commit.id).diff()
+                    self.unreviewed_files_set.update(
+                        {d['new_path']: d['new_path'] for d in commit_diffs if d.get('new_path')}
+                    )
+                except Exception as e:
+                    get_logger().warning(f"Could not get diff for commit {commit.id}: {e}")
+        else:
+            get_logger().info("No previous review found, will review the entire MR")
+            self.incremental.is_incremental = False
+
+    def get_commit_range(self):
+        last_review_time = self.previous_review.created_at  # ISO string from GitLab API
+        first_new_commit_index = None
+        for index in range(len(self.pr_commits) - 1, -1, -1):
+            if self.pr_commits[index].created_at > last_review_time:
+                self.incremental.first_new_commit = self.pr_commits[index]
+                first_new_commit_index = index
+            else:
+                self.incremental.last_seen_commit = self.pr_commits[index]
+                break
+        return self.pr_commits[first_new_commit_index:] if first_new_commit_index is not None else []
+
+    def get_previous_review(self, *, full: bool, incremental: bool):
+        if not (full or incremental):
+            raise ValueError("At least one of full or incremental must be True")
+        if not getattr(self, "comments", None):
+            # notes.list() returns oldest-first by default
+            self.comments = self.mr.notes.list(get_all=True)
+        prefixes = []
+        if full:
+            prefixes.append(PRReviewHeader.REGULAR.value)
+        if incremental:
+            prefixes.append(PRReviewHeader.INCREMENTAL.value)
+        for index in range(len(self.comments) - 1, -1, -1):
+            if any(self.comments[index].body.startswith(prefix) for prefix in prefixes):
+                return self.comments[index]
+        return None
 
     def publish_description(self, pr_title: str, pr_body: str):
         try:

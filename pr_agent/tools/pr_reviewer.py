@@ -1,5 +1,6 @@
 import copy
 import datetime
+import re
 import traceback
 from collections import OrderedDict
 from functools import partial
@@ -107,6 +108,7 @@ class PRReviewer:
             "date": datetime.datetime.now().strftime('%Y-%m-%d'),
             "coding_standards": {"title": "", "body_value": "", "status": ""}, # Will be populated later if available
             "confluence_content": {"title": "", "body_value": "", "status": ""}, # Will be populated if ID found in MR
+            "previous_review_issues": [],  # kept for template compatibility (StrictUndefined)
         }
         if "jira_test_cases" not in self.vars:
             self.vars["jira_test_cases"] = []
@@ -153,8 +155,8 @@ class PRReviewer:
 
             if (
                 self.incremental.is_incremental
-                and hasattr(self.git_provider, "unreviewed_files_map")
-                and not self.git_provider.unreviewed_files_map
+                and hasattr(self.git_provider, "unreviewed_files_set")
+                and not self.git_provider.unreviewed_files_set
             ):
                 get_logger().info(f"Incremental review is enabled for {self.pr_url} but there are no new files")
                 previous_review_url = ""
@@ -299,6 +301,9 @@ class PRReviewer:
         if 'key_issues_to_review' in data['review']:
             key_issues_to_review = data['review'].pop('key_issues_to_review')
             data['review']['key_issues_to_review'] = key_issues_to_review
+
+        # Store parsed review data for sign-off check
+        self._last_review_data = data
 
         # --- JIRA test cases prettification ---
         if 'jira_test_cases' in data['review'] and isinstance(data['review']['jira_test_cases'], list):

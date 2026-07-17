@@ -110,6 +110,14 @@ You will be provided with specific MR review guidelines from a Confluence page. 
 =====
 {% endif %}
 
+{%- if previous_review_issues %}
+
+Previous Review Issues Assessment:
+=====
+The previous PR review raised specific issues listed in the user message. Based on the new code changes in this incremental review, carefully assess the current status of each previous issue. Check whether the code now addresses it, partially addresses it, or still has the problem. Also note if the developer has explicitly acknowledged the issue.
+=====
+{% endif %}
+
 The output must be a YAML object equivalent to type $PRReview, according to the following Pydantic definitions:
 =====
 {%- if require_can_be_split_review %}
@@ -124,6 +132,14 @@ class KeyIssuesComponentLink(BaseModel):
     issue_content: str = Field(description="A short and concise description of the issue, why it matters, and the specific scenario or input that triggers it. Do not mention line numbers in this field.")
     start_line: int = Field(description="The start line that corresponds to this issue in the relevant file")
     end_line: int = Field(description="The end line that corresponds to this issue in the relevant file")
+
+{%- if previous_review_issues %}
+class PreviousIssueStatus(BaseModel):
+    relevant_file: str = Field(description="File path of the previously reported issue")
+    issue_header: str = Field(description="The issue header exactly as reported in the previous review")
+    status: str = Field(description="Current status — one of: 'Addressed', 'Partially addressed', 'Not addressed', 'Acknowledged by developer'")
+    notes: str = Field(description="One sentence explaining why this status was assigned based on the new code")
+{%- endif %}
 
 {%- if require_todo_scan %}
 class TodoSection(BaseModel):
@@ -170,6 +186,9 @@ class Review(BaseModel):
     insights_from_user_answers: str = Field(description="shortly summarize the insights you gained from the user's answers to the questions")
 {%- endif %}
     key_issues_to_review: List[KeyIssuesComponentLink] = Field("A concise list (0-{{ num_max_findings }} issues) of bugs, security vulnerabilities, or significant performance concerns introduced in this PR. Only include issues you are confident about. If confidence is limited but the potential impact is high (e.g., data loss, security), you may include it only if you explicitly note what remains uncertain. Each issue must identify a concrete problem with a realistic trigger scenario. An empty list is acceptable if no clear issues are found.")
+{%- if previous_review_issues %}
+    previous_issues_status: List[PreviousIssueStatus] = Field(description="Status update for every issue raised in the previous review. Must contain exactly {{ previous_review_issues|length }} entries — one per previous issue.")
+{%- endif %}
 {%- if require_security_review %}
     security_concerns: str = Field(description="Does this PR code introduce vulnerabilities such as exposure of sensitive information (e.g., API keys, secrets, passwords), or security concerns like SQL injection, XSS, CSRF, and others? Answer 'No' (without explaining why) if there are no possible issues. If there are security concerns or issues, start your answer with a short header, such as: 'Sensitive information exposure: ...', 'SQL injection: ...', etc. Explain your answer. Be specific and give examples if possible")
 {%- endif %}
@@ -336,6 +355,20 @@ The PR code diff:
 ======
 {{ diff|trim }}
 ======
+
+{%- if previous_review_issues %}
+
+Issues raised in the previous review (assess each in 'previous_issues_status'):
+=====
+{% for issue in previous_review_issues %}
+{{ loop.index }}. File: {{ issue.relevant_file }}, Lines {{ issue.start_line }}-{{ issue.end_line }}
+   [{{ issue.issue_header }}]: {{ issue.issue_content }}
+{%- if issue.acknowledged %}
+   Developer note: acknowledged — no fix needed
+{%- endif %}
+{% endfor %}
+=====
+{%- endif %}
 
 {%- if jira_test_cases %}
 
