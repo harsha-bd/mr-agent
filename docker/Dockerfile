@@ -1,12 +1,12 @@
 FROM mirror.gcr.io/library/python:3.12.13-slim AS base
 
-RUN apt update && apt install --no-install-recommends -y git curl && apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN apt update && apt install --no-install-recommends -y git curl && apt-get install --only-upgrade -y ca-certificates && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 ADD pyproject.toml .
 ADD requirements.txt .
 ADD docs docs
-RUN pip install --no-cache-dir . && rm pyproject.toml requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir . && rm pyproject.toml requirements.txt
 ENV PYTHONPATH=/app
 
 FROM base AS github_app
